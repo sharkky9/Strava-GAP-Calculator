@@ -150,27 +150,41 @@ if uploaded_file is not None:
         # Mile splits table
         st.header("Mile Splits")
 
-        # Build combined DataFrame with all GAPs
+        # Build combined DataFrame with all GAPs using MultiIndex columns
         # Use first result for base columns (mile info is same for all)
         base_splits = all_results[0]['splits']
 
-        rows = []
+        # Build data row by row
+        data = []
         for mile_idx, base_split in enumerate(base_splits):
-            row = {
-                "Mile": base_split.mile_number if base_split.distance >= METERS_PER_MILE - 10 else f"{base_split.mile_number} ({base_split.distance/METERS_PER_MILE:.2f})",
-                "Grade": f"{base_split.avg_grade * 100:+.1f}%",
-                "Gain (ft)": f"+{base_split.elevation_gain * 3.28084:.0f}" if base_split.elevation_gain > 0 else "-",
-                "Loss (ft)": f"-{base_split.elevation_loss * 3.28084:.0f}" if base_split.elevation_loss > 0 else "-",
-            }
+            row = [
+                base_split.mile_number if base_split.distance >= METERS_PER_MILE - 10 else f"{base_split.mile_number} ({base_split.distance/METERS_PER_MILE:.2f})",
+                f"{base_split.avg_grade * 100:+.1f}%",
+                f"+{base_split.elevation_gain * 3.28084:.0f}" if base_split.elevation_gain > 0 else "-",
+                f"-{base_split.elevation_loss * 3.28084:.0f}" if base_split.elevation_loss > 0 else "-",
+            ]
             # Add columns for each GAP
             for result in all_results:
-                gap_label = result['gap_str']
                 split = result['splits'][mile_idx]
-                row[f"{gap_label} Pace"] = split.actual_pace
-                row[f"{gap_label} Elapsed"] = seconds_to_time(split.elapsed_time)
-            rows.append(row)
+                row.append(split.actual_pace)
+                row.append(seconds_to_time(split.elapsed_time))
+            data.append(row)
 
-        df = pd.DataFrame(rows)
+        # Build MultiIndex columns
+        base_columns = [
+            ("", "Mile"),
+            ("", "Grade"),
+            ("", "Gain (ft)"),
+            ("", "Loss (ft)"),
+        ]
+        gap_columns = []
+        for result in all_results:
+            gap_label = f"{result['gap_str']} GAP"
+            gap_columns.append((gap_label, "Pace"))
+            gap_columns.append((gap_label, "Elapsed"))
+
+        columns = pd.MultiIndex.from_tuples(base_columns + gap_columns)
+        df = pd.DataFrame(data, columns=columns)
 
         st.dataframe(df, use_container_width=True, hide_index=True)
 
