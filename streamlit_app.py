@@ -32,6 +32,17 @@ st.markdown(
     "based on your target Grade Adjusted Pace (GAP)."
 )
 
+# Initialize session state for GAP list
+if 'gap_list' not in st.session_state:
+    st.session_state.gap_list = [{'minutes': 9, 'seconds': 0}]
+
+def add_gap():
+    st.session_state.gap_list.append({'minutes': 9, 'seconds': 0})
+
+def remove_gap(index):
+    if len(st.session_state.gap_list) > 1:
+        st.session_state.gap_list.pop(index)
+
 # Sidebar for inputs
 with st.sidebar:
     st.header("Upload Route")
@@ -41,28 +52,39 @@ with st.sidebar:
         help="Go to your Strava route, click the wrench icon, and select 'Export GPX'"
     )
 
-    st.header("Target GAP")
+    st.header("Target GAP(s)")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        gap_minutes = st.number_input("Minutes", min_value=4, max_value=20, value=9)
-    with col2:
-        gap_seconds = st.number_input("Seconds", min_value=0, max_value=59, value=0)
-
-    gap_str = f"{gap_minutes}:{gap_seconds:02d}"
-    st.markdown(f"**Target GAP: {gap_str}/mile**")
-
-    # Option for multiple GAPs
-    st.markdown("---")
-    compare_mode = st.checkbox("Compare multiple GAPs")
-
-    if compare_mode:
-        col1, col2 = st.columns(2)
+    # Display each GAP input
+    for i, gap in enumerate(st.session_state.gap_list):
+        col1, col2, col3 = st.columns([2, 2, 1])
         with col1:
-            gap2_minutes = st.number_input("Minutes ", min_value=4, max_value=20, value=9, key="gap2_min")
+            st.session_state.gap_list[i]['minutes'] = st.number_input(
+                f"Min" if i == 0 else f"Min ",
+                min_value=4, max_value=20,
+                value=gap['minutes'],
+                key=f"gap_min_{i}",
+                label_visibility="collapsed" if i > 0 else "visible"
+            )
         with col2:
-            gap2_seconds = st.number_input("Seconds ", min_value=0, max_value=59, value=30, key="gap2_sec")
-        gap2_str = f"{gap2_minutes}:{gap2_seconds:02d}"
+            st.session_state.gap_list[i]['seconds'] = st.number_input(
+                f"Sec" if i == 0 else f"Sec ",
+                min_value=0, max_value=59,
+                value=gap['seconds'],
+                key=f"gap_sec_{i}",
+                label_visibility="collapsed" if i > 0 else "visible"
+            )
+        with col3:
+            if i == 0:
+                st.markdown("<br>", unsafe_allow_html=True)
+            if len(st.session_state.gap_list) > 1:
+                st.button("X", key=f"remove_{i}", on_click=remove_gap, args=(i,))
+
+    # Add GAP button
+    st.button("+ Add GAP", on_click=add_gap)
+
+    # Show current GAPs
+    gap_strings = [f"{g['minutes']}:{g['seconds']:02d}" for g in st.session_state.gap_list]
+    st.markdown(f"**Comparing: {', '.join(gap_strings)}/mile**")
 
 
 # Main content
@@ -101,52 +123,54 @@ if uploaded_file is not None:
         with col3:
             st.metric("Elevation Loss", f"{total_loss * 3.28084:.0f} ft")
 
-        # Calculate splits for primary GAP
-        gap_secs = pace_to_seconds(gap_str)
-        splits, summary = calculate_mile_splits(segments, gap_secs)
+        # Calculate splits for all GAPs
+        all_results = []
+        for gap in st.session_state.gap_list:
+            gap_str = f"{gap['minutes']}:{gap['seconds']:02d}"
+            gap_secs = pace_to_seconds(gap_str)
+            splits, summary = calculate_mile_splits(segments, gap_secs)
+            all_results.append({
+                'gap_str': gap_str,
+                'gap_secs': gap_secs,
+                'splits': splits,
+                'summary': summary
+            })
 
         # Results
         st.header("Predicted Results")
 
-        if compare_mode:
-            # Compare two GAPs side by side
-            gap2_secs = pace_to_seconds(gap2_str)
-            splits2, summary2 = calculate_mile_splits(segments, gap2_secs)
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.subheader(f"GAP: {gap_str}/mile")
-                st.metric("Total Time", summary['total_time_formatted'])
-                st.metric("Avg Actual Pace", f"{summary['avg_actual_pace']}/mile")
-
-            with col2:
-                st.subheader(f"GAP: {gap2_str}/mile")
-                st.metric("Total Time", summary2['total_time_formatted'])
-                st.metric("Avg Actual Pace", f"{summary2['avg_actual_pace']}/mile")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Predicted Total Time", summary['total_time_formatted'])
-            with col2:
-                st.metric("Average Actual Pace", f"{summary['avg_actual_pace']}/mile")
+        # Show summary for each GAP
+        cols = st.columns(len(all_results))
+        for i, result in enumerate(all_results):
+            with cols[i]:
+                st.subheader(f"GAP: {result['gap_str']}/mile")
+                st.metric("Total Time", result['summary']['total_time_formatted'])
+                st.metric("Avg Actual Pace", f"{result['summary']['avg_actual_pace']}/mile")
 
         # Mile splits table
         st.header("Mile Splits")
 
-        # Convert splits to DataFrame
-        df = pd.DataFrame([
-            {
-                "Mile": s.mile_number if s.distance >= METERS_PER_MILE - 10 else f"{s.mile_number} ({s.distance/METERS_PER_MILE:.2f})",
-                "Grade": f"{s.avg_grade * 100:+.1f}%",
-                "Gain (ft)": f"+{s.elevation_gain * 3.28084:.0f}" if s.elevation_gain > 0 else "-",
-                "Loss (ft)": f"-{s.elevation_loss * 3.28084:.0f}" if s.elevation_loss > 0 else "-",
-                "GAP": s.gap,
-                "Actual Pace": s.actual_pace,
-                "Elapsed": seconds_to_time(s.elapsed_time),
+        # Build combined DataFrame with all GAPs
+        # Use first result for base columns (mile info is same for all)
+        base_splits = all_results[0]['splits']
+
+        rows = []
+        for mile_idx, base_split in enumerate(base_splits):
+            row = {
+                "Mile": base_split.mile_number if base_split.distance >= METERS_PER_MILE - 10 else f"{base_split.mile_number} ({base_split.distance/METERS_PER_MILE:.2f})",
+                "Grade": f"{base_split.avg_grade * 100:+.1f}%",
+                "Gain (ft)": f"+{base_split.elevation_gain * 3.28084:.0f}" if base_split.elevation_gain > 0 else "-",
+                "Loss (ft)": f"-{base_split.elevation_loss * 3.28084:.0f}" if base_split.elevation_loss > 0 else "-",
             }
-            for s in splits
-        ])
+            # Add columns for each GAP
+            for result in all_results:
+                gap_label = result['gap_str']
+                split = result['splits'][mile_idx]
+                row[f"{gap_label} Pace"] = split.actual_pace
+                row[f"{gap_label} Elapsed"] = seconds_to_time(split.elapsed_time)
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
 
         st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -196,9 +220,9 @@ else:
 
     2. **Upload the GPX file** using the sidebar
 
-    3. **Set your target GAP** (Grade Adjusted Pace)
+    3. **Set your target GAP(s)** - add multiple to compare side by side
 
-    4. **View your predicted splits** and total time
+    4. **View your predicted splits** and total time for each GAP
 
     ---
 
