@@ -41,6 +41,12 @@ st.set_page_config(
 
 st.title("🏃 Strava GAP Calculator")
 
+mode = st.radio(
+    "Mode",
+    ["Route GAP Calculator", "Workout Planner"],
+    horizontal=True,
+)
+
 # Initialize session state for GAP list
 if "gap_list" not in st.session_state:
     st.session_state.gap_list = [{"minutes": 9, "seconds": 0}]
@@ -100,9 +106,7 @@ def remove_interval(index):
         st.session_state.workout_intervals.pop(index)
 
 
-route_tab, workout_tab = st.tabs(["Route GAP Calculator", "Workout Planner"])
-
-with route_tab:
+if mode == "Route GAP Calculator":
     st.markdown(
         "Calculate predicted elapsed time and mile splits for a route "
         "based on your target Grade Adjusted Pace (GAP)."
@@ -282,8 +286,7 @@ with route_tab:
             4. **View your predicted splits** and total time for each GAP
             """
         )
-
-with workout_tab:
+else:
     st.markdown(
         "Plan interval workouts using race-equivalent paces and treadmill incline adjustments."
     )
