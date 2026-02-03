@@ -7,6 +7,8 @@ for a route given target Grade Adjusted Pace (GAP) values.
 
 import streamlit as st
 import pandas as pd
+import json
+import textwrap
 
 # Import core logic from gap_calculator
 from gap_calculator import (
@@ -28,10 +30,40 @@ from workout_utils import (
     normalize_race_label,
     seconds_to_pace as workout_seconds_to_pace,
     seconds_to_time as workout_seconds_to_time,
+    pace_str_to_seconds,
     time_str_to_seconds,
     RACE_DISTANCES_M,
     EFFORT_MULTIPLIERS,
 )
+
+WORKOUT_BULK_FORMAT_VERSION = "workout_planner_v1"
+WORKOUT_BULK_PROMPT = textwrap.dedent(
+    """
+    You are converting a workout description into structured JSON for a Streamlit app.
+    Output ONLY valid JSON (no markdown, no code fences) matching this schema:
+
+    {
+      "format": "workout_planner_v1",
+      "description": "<short natural language summary>",
+      "intervals": [
+        {
+          "name": "Warmup",
+          "kind": "warmup | work | recovery | cooldown",
+          "length": "2mi | 1.5km | 400m | 10:00",
+          "pace": "mm:ss | race:half marathon | effort:easy",
+          "incline_pct": 1.5
+        }
+      ]
+    }
+
+    Notes:
+    - "length" uses distance with unit (mi/km/m) or duration mm:ss.
+    - "pace" is either mm:ss, "race:<label>", or "effort:<label>".
+    - Use race labels: 800m, 1500m, 1 mile, 3k, 5k, 10k, 15k, half marathon, marathon, 50k.
+    - Use effort labels: easy, recovery, steady.
+    - If no incline override is needed, set "incline_pct" to null.
+    """
+).strip()
 
 st.set_page_config(
     page_title="Strava GAP Calculator",
@@ -104,6 +136,131 @@ def add_interval():
 def remove_interval(index):
     if len(st.session_state.workout_intervals) > 1:
         st.session_state.workout_intervals.pop(index)
+
+
+def parse_bulk_length(value: str):
+    value = value.strip()
+    if ":" in value:
+        duration_s = time_str_to_seconds(value)
+        return "duration", float(duration_s), "time"
+    parts = value.lower().replace(" ", "")
+    number = ""
+    unit = ""
+    for char in parts:
+        if char.isdigit() or char == ".":
+            number += char
+        else:
+            unit += char
+    if not number or unit not in {"mi", "km", "m"}:
+        raise ValueError(f"Invalid length '{value}'. Use 2mi, 1.5km, 400m, or 10:00.")
+    return "distance", float(number), unit
+
+
+def parse_bulk_pace(value: str):
+    value = value.strip()
+    lower = value.lower()
+    if lower.startswith("race:"):
+        return "race", value.split(":", 1)[1].strip()
+    if lower.startswith("effort:"):
+        return "effort", value.split(":", 1)[1].strip()
+    pace_str_to_seconds(value)
+    return "manual", value
+
+
+def parse_bulk_workout(raw_text: str):
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 2:
+            cleaned = "\n".join(lines[1:-1]).strip()
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno}).") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Top-level JSON must be an object.")
+    if data.get("format") != WORKOUT_BULK_FORMAT_VERSION:
+        raise ValueError(
+            f"Invalid format. Expected format '{WORKOUT_BULK_FORMAT_VERSION}'."
+        )
+    if "intervals" not in data or not isinstance(data["intervals"], list):
+        raise ValueError("Missing or invalid 'intervals' array.")
+
+    intervals = []
+    errors = []
+    for idx, interval in enumerate(data["intervals"]):
+        if not isinstance(interval, dict):
+            errors.append(f"intervals[{idx}] must be an object.")
+            continue
+
+        name = interval.get("name", "").strip()
+        kind = interval.get("kind", "").strip().lower()
+        length_raw = interval.get("length", "")
+        pace_raw = interval.get("pace", "")
+        incline_pct = interval.get("incline_pct", None)
+
+        if not name:
+            errors.append(f"intervals[{idx}].name is required.")
+        if kind not in {"warmup", "work", "recovery", "cooldown"}:
+            errors.append(
+                f"intervals[{idx}].kind must be one of warmup, work, recovery, cooldown."
+            )
+        try:
+            length_type, length_value, length_unit = parse_bulk_length(str(length_raw))
+        except Exception as exc:
+            errors.append(f"intervals[{idx}].length error: {exc}")
+            length_type, length_value, length_unit = "distance", 1.0, "mi"
+        try:
+            pace_source, pace_value = parse_bulk_pace(str(pace_raw))
+        except Exception as exc:
+            errors.append(f"intervals[{idx}].pace error: {exc}")
+            pace_source, pace_value = "manual", "9:00"
+
+        incline_override = incline_pct is not None
+        if incline_override:
+            try:
+                incline_pct = float(incline_pct)
+            except Exception:
+                errors.append(f"intervals[{idx}].incline_pct must be a number or null.")
+                incline_pct = 0.0
+
+        duration_minutes = 0
+        duration_seconds = 0
+        if length_type == "duration":
+            total_seconds = int(length_value)
+            duration_minutes = total_seconds // 60
+            duration_seconds = total_seconds % 60
+
+        pace_minutes = 0
+        pace_seconds = 0
+        if pace_source == "manual":
+            pace_seconds_total = pace_str_to_seconds(pace_value)
+            pace_minutes = int(pace_seconds_total // 60)
+            pace_seconds = int(pace_seconds_total % 60)
+
+        intervals.append(
+            {
+                "name": name,
+                "kind": kind,
+                "length_type": length_type,
+                "length_value": length_value,
+                "length_unit": length_unit,
+                "duration_minutes": duration_minutes,
+                "duration_seconds": duration_seconds,
+                "pace_source": pace_source,
+                "pace_value": pace_value,
+                "pace_minutes": pace_minutes,
+                "pace_seconds": pace_seconds,
+                "incline_override": incline_override,
+                "incline_pct": float(incline_pct) if incline_override else 0.0,
+            }
+        )
+
+    if errors:
+        error_text = "Bulk workout validation errors:\n" + "\n".join(f"- {e}" for e in errors)
+        raise ValueError(error_text)
+
+    return data.get("description", "").strip(), intervals
 
 
 if mode == "Route GAP Calculator":
@@ -290,6 +447,34 @@ else:
     st.markdown(
         "Plan interval workouts using race-equivalent paces and treadmill incline adjustments."
     )
+
+    with st.sidebar:
+        st.header("Bulk Workout Builder")
+        st.caption(
+            "Describe your workout in natural language, then paste the prompt below into your LLM."
+        )
+        st.code(WORKOUT_BULK_PROMPT, language="text")
+        st.caption("Paste the JSON output from the LLM here.")
+        bulk_text = st.text_area(
+            "Bulk workout JSON",
+            height=200,
+            placeholder='{"format":"workout_planner_v1","description":"...","intervals":[...]}',
+            key="bulk_workout_json",
+        )
+        if st.button("Apply Bulk Workout"):
+            if not bulk_text.strip():
+                st.warning("Paste your JSON output first.")
+            else:
+                try:
+                    description, intervals = parse_bulk_workout(bulk_text)
+                    st.session_state.workout_intervals = intervals
+                    if description:
+                        st.success(f"Loaded workout: {description}")
+                    else:
+                        st.success("Loaded workout intervals.")
+                except Exception as exc:
+                    st.error("Bulk workout import failed. Copy the details below back to the LLM to fix the output.")
+                    st.code(str(exc), language="text")
 
     st.subheader("Race Equivalent Input")
     race_labels = list(RACE_DISTANCES_M.keys())
