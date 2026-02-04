@@ -41,6 +41,7 @@ WORKOUT_BULK_PROMPT = textwrap.dedent(
     """
     You are converting a workout description into structured JSON for a Streamlit app.
     Output ONLY valid JSON (no markdown, no code fences) matching this schema:
+    Use straight double quotes (") for all keys and string values. Do NOT use smart quotes (e.g., “ ”).
 
     {
       "format": "workout_planner_v1",
