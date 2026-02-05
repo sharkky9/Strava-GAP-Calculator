@@ -174,6 +174,12 @@ def parse_bulk_workout(raw_text: str):
         lines = cleaned.splitlines()
         if len(lines) >= 2:
             cleaned = "\n".join(lines[1:-1]).strip()
+    cleaned = (
+        cleaned.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -489,7 +495,7 @@ else:
     with col1:
         workout_incline_pct = st.number_input("Workout incline (%)", value=0.0, step=0.5)
     with col2:
-        treadmill_offset_pct = st.number_input("Treadmill offset (%)", value=1.0, step=0.5)
+        treadmill_offset_pct = st.number_input("Treadmill offset (%)", value=0.0, step=0.5)
 
     st.subheader("Intervals")
     for idx, interval in enumerate(st.session_state.workout_intervals):
